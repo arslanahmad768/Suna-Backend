@@ -13,6 +13,7 @@ from utils.config import config, EnvMode
 from services.supabase import DBConnection
 from utils.auth_utils import get_current_user_id_from_jwt
 from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
 
 # Initialize Stripe
 stripe.api_key = config.STRIPE_SECRET_KEY
@@ -245,6 +246,79 @@ async def check_billing_status(client, user_id: str) -> Tuple[bool, str, Optiona
         return False, f"Monthly limit of {tier_info['minutes']} minutes reached. Please upgrade your plan or wait until next month.", subscription
     
     return True, "OK", subscription
+
+
+async def update_user_credits_by_auth_email(client, email: str, credits_to_add: int, default_account_id: str):
+    """
+    Lookup user from Supabase Auth by email and update their credits.
+    If no record exists in user_credits, insert a new one.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+
+    # 1. Fetch user_id from Supabase Auth
+    user_resp = await client.auth.admin.get_user_by_email(email)
+    if not user_resp or not user_resp.user:
+        raise ValueError(f"No Supabase auth user found for email: {email}")
+    
+    user_id = user_resp.user.id
+
+    # 2. Try to fetch existing user_credits row
+    credits_resp = await client.table('user_credits') \
+        .select('credits') \
+        .eq('user_id', user_id) \
+        .single() \
+        .execute()
+
+    if credits_resp.data:
+        current_credits = credits_resp.data.get("credits", 0)
+        new_credits = current_credits + credits_to_add
+
+        # 3a. Update existing row
+        update = await client.table('user_credits') \
+            .update({
+                "credits": new_credits,
+                "updated_at": now
+            }) \
+            .eq('user_id', user_id) \
+            .execute()
+
+        return update.data
+    else:
+        # 3b. Insert new row
+        insert = await client.table('user_credits').insert({
+            "user_id": user_id,
+            "account_id": default_account_id,
+            "credits": credits_to_add,
+            "created_at": now,
+            "updated_at": now
+        }).execute()
+
+        return insert.data
+
+@router.post("/payment")
+async def payment(
+    request: CreateCheckoutSessionRequest,
+    current_user_id: str = Depends(get_current_user_id_from_jwt)
+):
+    """Create a Stripe Checkout session or modify an existing subscription."""
+    try:
+        # Get Supabase client
+        db = DBConnection()
+        client = await db.client
+        form = await request.form()
+        data = dict(form)
+        
+
+        print("Gumroad Webhook Received:")
+        print(data)
+        update_user_credits()
+
+        return JSONResponse({"success": True})
+    
+    except Exception as e:
+        logger.exception(f"Error updating payment credits {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating subscription: {str(e)}")
+
 
 # API endpoints
 @router.post("/create-checkout-session")

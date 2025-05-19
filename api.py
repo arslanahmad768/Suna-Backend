@@ -152,7 +152,7 @@ async def gumroad_webhook(request: Request):
     form = await request.form()
     data = dict(form)
 
-    print("📦 Gumroad Webhook Received:")
+    print("Gumroad Webhook Received:")
     print(data)
 
     return JSONResponse({"success": True})
